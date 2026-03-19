@@ -3,249 +3,168 @@
 
 from googleapiclient.discovery import build
 import argparse
-import time
-import json
 import logging
-from pathlib import Path
+import json
+import time
 
-# ===============================
-# CONFIG
-# ===============================
-
-API_KEY = "AIzaSyDq94iIVNVHF9cNBVZKHIFeFIQM4bVOuJ0"
-
+# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S"
 )
-
-logger = logging.getLogger("YT-OSINT")
-
-CACHE_DIR = Path("cache")
-CACHE_DIR.mkdir(exist_ok=True)
+logger = logging.getLogger("YT-Analyzer")
 
 # ===============================
 # UTILS
 # ===============================
 
-def wait_humanly():
-    """Petit délai (optionnel avec API mais garde une cohérence)."""
-    time.sleep(0.1)
+def human_delay(min_s=1, max_s=3):
+    """Random short delay to avoid hitting API limits too fast."""
+    import random
+    time.sleep(random.uniform(min_s, max_s))
 
 # ===============================
-# YOUTUBE API INIT
+# YOUTUBE FUNCTIONS
 # ===============================
 
-def get_youtube():
-    return build("youtube", "v3", developerKey=API_KEY)
+def build_youtube_service(api_key):
+    """Build the YouTube API service."""
+    return build("youtube", "v3", developerKey=api_key)
 
-# ===============================
-# CHANNEL
-# ===============================
-
-def get_channel(youtube, name):
-    """Trouve une chaîne par nom."""
-
+def get_channel(youtube, target):
+    """Search for a channel by name or ID."""
+    logger.info("Searching for the channel...")
     request = youtube.search().list(
         part="snippet",
-        q=name,
+        q=target,
         type="channel",
         maxResults=1
     )
-
     response = request.execute()
-
     if not response["items"]:
-        logger.error("Chaîne introuvable.")
-        exit(1)
-
+        logger.error(f"No channel found for '{target}'")
+        return None
     channel_id = response["items"][0]["snippet"]["channelId"]
+    channel_title = response["items"][0]["snippet"]["title"]
+    logger.info(f"Found channel: {channel_title} ({channel_id})")
+    return {"id": channel_id, "title": channel_title}
 
-    stats = youtube.channels().list(
-        part="snippet,statistics",
-        id=channel_id
-    ).execute()
-
-    return stats["items"][0]
-
-# ===============================
-# VIDEOS
-# ===============================
-
-def get_videos(youtube, channel_id, max_videos=30):
-    """Récupère les vidéos d'une chaîne."""
-
+def get_videos(youtube, channel_id, max_results=20):
+    """Retrieve recent videos from a channel."""
+    logger.info("Retrieving videos...")
+    request = youtube.search().list(
+        part="snippet",
+        channelId=channel_id,
+        maxResults=max_results,
+        order="date",
+        type="video"
+    )
+    response = request.execute()
     videos = []
-    next_page = None
-
-    while len(videos) < max_videos:
-
-        request = youtube.search().list(
-            part="snippet",
-            channelId=channel_id,
-            maxResults=10,
-            order="date",
-            pageToken=next_page
-        )
-
-        response = request.execute()
-
-        for item in response["items"]:
-            if item["id"]["kind"] != "youtube#video":
-                continue
-
-            videos.append(item["id"]["videoId"])
-
-            if len(videos) >= max_videos:
-                break
-
-        next_page = response.get("nextPageToken")
-
-        if not next_page:
-            break
-
+    for item in response["items"]:
+        videos.append({
+            "videoId": item["id"]["videoId"],
+            "title": item["snippet"]["title"]
+        })
     return videos
 
-# ===============================
-# VIDEO STATS
-# ===============================
-
-def analyze_videos(youtube, video_ids):
-    """Analyse les vidéos."""
-
-    stats_data = []
+def analyze_videos(youtube, videos):
+    """Get stats for each video and collect top commenters."""
+    logger.info("Analyzing videos...")
     total_views = 0
-    interaction_map = {}
+    commenters_count = {}
 
-    for vid in video_ids:
+    for i, video in enumerate(videos, start=1):
+        request = youtube.videos().list(
+            part="statistics",
+            id=video["videoId"]
+        )
+        response = request.execute()
+        stats = response["items"][0]["statistics"]
+        views = int(stats.get("viewCount", 0))
+        video["views"] = views
+        total_views += views
 
+        # Fetch top 5 comments per video
         try:
-            request = youtube.videos().list(
-                part="statistics",
-                id=vid
+            comment_request = youtube.commentThreads().list(
+                part="snippet",
+                videoId=video["videoId"],
+                maxResults=5,
+                order="relevance"
             )
+            comment_response = comment_request.execute()
+            for comment in comment_response.get("items", []):
+                author = comment["snippet"]["topLevelComment"]["snippet"]["authorDisplayName"]
+                commenters_count[author] = commenters_count.get(author, 0) + 1
+        except Exception:
+            pass
 
-            response = request.execute()
-            stats = response["items"][0]["statistics"]
+        if i % 5 == 0:
+            logger.info(f"{i}/{len(videos)} videos analyzed")
+        human_delay(0.5, 1.5)
 
-            views = int(stats.get("viewCount", 0))
-            likes = int(stats.get("likeCount", 0))
-            comments = int(stats.get("commentCount", 0))
+    # Get top 5 commenters
+    top_commenters = sorted(commenters_count.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_commenters = [name for name, count in top_commenters]
 
-            total_views += views
+    return total_views, top_commenters
 
-            stats_data.append({
-                "video_id": vid,
-                "views": views,
-                "likes": likes,
-                "comments": comments
-            })
-
-            # commentaires
-            try:
-                comment_request = youtube.commentThreads().list(
-                    part="snippet",
-                    videoId=vid,
-                    maxResults=20
-                )
-
-                comment_response = comment_request.execute()
-
-                for c in comment_response["items"]:
-                    user = c["snippet"]["topLevelComment"]["snippet"]["authorDisplayName"]
-                    interaction_map[user] = interaction_map.get(user, 0) + 1
-
-            except Exception:
-                pass
-
-            wait_humanly()
-
-        except Exception as e:
-            logger.warning(f"Erreur vidéo {vid}: {e}")
-
-    return stats_data, total_views, interaction_map
-
-# ===============================
-# INTERACTIONS
-# ===============================
-
-def extract_top_users(interaction_map, limit=5):
-    sorted_users = sorted(
-        interaction_map.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-    return [u for u, _ in sorted_users[:limit]]
-
-# ===============================
-# EXPORT
-# ===============================
-
-def export_json(data, name):
-    filename = f"report_{name}.json"
-
+def export_json(data, filename):
+    """Save analysis results to a JSON file."""
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-
-    logger.info(f"Export JSON : {filename}")
+    logger.info(f"Report saved to {filename}")
 
 # ===============================
 # MAIN
 # ===============================
 
 def main():
-
-    parser = argparse.ArgumentParser(description="YouTube OSINT Analyzer")
-
-    parser.add_argument("--target", required=True, help="Nom de la chaîne")
-    parser.add_argument("--videos", type=int, default=20, help="Nombre de vidéos à analyser")
-    parser.add_argument("--output", action="store_true", help="Exporter JSON")
-
+    parser = argparse.ArgumentParser(description="YouTube Channel Analyzer")
+    parser.add_argument("--target", required=True, help="Channel name to analyze")
+    parser.add_argument("--output", action="store_true", help="Export results to JSON")
     args = parser.parse_args()
 
-    youtube = get_youtube()
+    # Prompt user for API key
+    api_key = input("[?] Enter your YouTube API key: ").strip()
+    if not api_key:
+        logger.error("No API key provided. Exiting.")
+        return
 
-    logger.info("Recherche de la chaîne...")
+    youtube = build_youtube_service(api_key)
+
     channel = get_channel(youtube, args.target)
+    if not channel:
+        return
 
-    channel_id = channel["id"]
+    videos = get_videos(youtube, channel["id"])
+    total_views, top_commenters = analyze_videos(youtube, videos)
 
-    logger.info("Récupération des vidéos...")
-    videos = get_videos(youtube, channel_id, args.videos)
-
-    logger.info("Analyse des vidéos...")
-    stats, total_views, interactions = analyze_videos(youtube, videos)
-
-    top_users = extract_top_users(interactions)
-
-    report = {
-        "channel": {
-            "name": channel["snippet"]["title"],
-            "subscribers": channel["statistics"].get("subscriberCount"),
-            "views": channel["statistics"].get("viewCount"),
-            "videos": channel["statistics"].get("videoCount")
-        },
-        "analysis": {
-            "videos_analyzed": len(stats),
-            "total_views": total_views
-        },
-        "top_commenters": top_users
-    }
-
+    # Display results
     print("\n===== YOUTUBE ANALYSIS =====")
-    print("Channel:", report["channel"]["name"])
-    print("Subscribers:", report["channel"]["subscribers"])
-    print("Videos analyzed:", report["analysis"]["videos_analyzed"])
-    print("Total views:", report["analysis"]["total_views"])
-
+    print(f"Channel: {channel['title']}")
+    print(f"Videos analyzed: {len(videos)}")
+    print(f"Total views: {total_views}")
     print("\nTop commenters:")
-    for u in top_users:
-        print("-", u)
+    if top_commenters:
+        for user in top_commenters:
+            print("-", user)
+    else:
+        print("None")
 
+    # Export if requested
     if args.output:
-        export_json(report, args.target)
-
+        export_json({
+            "channel": channel,
+            "videos": videos,
+            "total_views": total_views,
+            "top_commenters": top_commenters
+        }, f"report_{channel['title'].replace(' ', '_')}.json")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[!] Interrupted by user. Exiting...")
