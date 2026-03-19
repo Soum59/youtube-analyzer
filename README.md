@@ -72,11 +72,16 @@ python3 project.py --target "Name_Of_The_Analyzed_Channel" --output --max-videos
  Project Structure:
 youtube-analyzer/
 ├── project.py          # Main script
+
 ├── README.md           # Project documentation
+
 ├── venv/               # Python virtual environment
+
 ├── sessions/           # (optional) sessions if used
+
 └── report_<channel>.json # JSON reports generated after analysis
- Security:
+
+ ====Security:====
 
 Never include the API key in the code or on GitHub.
 
@@ -85,9 +90,11 @@ Always use an environment variable to store the key.
 Do not share the project.py file containing the key in plaintext.
 
  Sample Output:
+ 
 Channel: Name_Of_The_Analyzed_Channel
-Subscribers: 123,456
+
 Videos analyzed: 20
+
 Total views: 1,234,456
 
 Top commenters:
