@@ -68,7 +68,7 @@ Available options:
 
 ====Example:====
 
-python3 project.py --target "Cooking with Morgane" --output --max-videos 30
+python3 project.py --target "Name_Of_The_Analyzed_Channel" --output --max-videos 30
  Project Structure:
 youtube-analyzer/
 ├── project.py          # Main script
@@ -85,7 +85,7 @@ Always use an environment variable to store the key.
 Do not share the project.py file containing the key in plaintext.
 
  Sample Output:
-Channel: Nale_Of_The_Analyzed_Channel
+Channel: Name_Of_The_Analyzed_Channel
 Subscribers: 123,456
 Videos analyzed: 20
 Total views: 1,234,456
